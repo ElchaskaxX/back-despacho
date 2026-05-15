@@ -1,0 +1,75 @@
+# ============================================================
+# CI/CD Pipeline - Backend Despachos
+# Trigger: push a la rama deploy
+# Pasos: build imagen → push Docker Hub → deploy en EC2
+# ============================================================
+
+name: CI/CD Backend Despachos
+
+on:
+  push:
+    branches:
+      - deploy
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-push:
+    name: Build y Push imagen Docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Login a Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build y Push imagen
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+
+  deploy:
+    name: Deploy en EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Deploy en instancia EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_BACK_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            docker pull ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+            docker stop back-despachos || true
+            docker rm back-despachos || true
+
+            docker run -d \
+              --name back-despachos \
+              --restart unless-stopped \
+              -p 8081:8081 \
+              -e DB_ENDPOINT=${{ secrets.DB_ENDPOINT }} \
+              -e DB_PORT=${{ secrets.DB_PORT }} \
+              -e DB_NAME=${{ secrets.DB_NAME_DESPACHOS }} \
+              -e DB_USERNAME=${{ secrets.DB_USERNAME }} \
+              -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+            docker ps | grep back-despachos
+            docker image prune -f
